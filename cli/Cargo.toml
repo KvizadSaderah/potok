@@ -1,0 +1,23 @@
+[package]
+name = "potok"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+description = "A local ledger in the terminal: one binary, one SQLite file, no server and no account."
+readme = "../README.md"
+keywords = ["finance", "ledger", "tui", "sqlite", "budget"]
+categories = ["command-line-utilities", "finance"]
+
+[dependencies]
+anyhow = "1.0.104"
+argon2 = "0.5.3"
+chrono = "0.4.45"
+crossterm = "0.29.0"
+potok-core = { version = "0.2.0", path = "../core" }
+password-hash = { version = "0.5.0", features = ["getrandom"] }
+ratatui = "0.29.0"
+rusqlite = { version = "0.40.2", features = ["backup"] }
+serde_json = "1.0.154"
+chacha20poly1305 = "0.10.1"
+sha2 = "0.10.9"

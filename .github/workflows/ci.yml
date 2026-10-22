@@ -1,0 +1,23 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      # The same pinned toolchain everywhere, so a warning that fails the
+      # build here fails it on the laptop too.
+      - run: rustup toolchain install 1.98.1 --profile minimal --component clippy
+      - run: rustup default 1.98.1
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test

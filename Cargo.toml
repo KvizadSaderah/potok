@@ -1,0 +1,15 @@
+[workspace]
+members = ["core", "cli"]
+resolver = "2"
+
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.82"
+
+# One release profile for the whole workspace: the binary is copied to another
+# machine and run, so size and having no outside dependencies both matter.
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
