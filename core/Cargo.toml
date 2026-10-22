@@ -1,0 +1,17 @@
+[package]
+name = "potok-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+description = "The ledger behind potok: money, invariants, import, queries."
+readme = "../README.md"
+keywords = ["finance", "ledger", "tui", "sqlite", "budget"]
+categories = ["command-line-utilities", "finance"]
+
+[dependencies]
+anyhow = "1.0.104"
+chrono = "0.4.45"
+pdf-extract = "0.12.1"
+rusqlite = { version = "0.40.2", features = ["bundled", "backup"] }
+sha2 = "0.10.9"
