@@ -68,6 +68,7 @@ potok — a local ledger
   potok restore [file|latest]  put a backup in place of the ledger; the current one is backed up first
   potok cloud login [--email <address>] [--project <id>]  set up the encrypted copy in Google Drive
   potok cloud                  is it set up, when the last copy went, the copies there
+  potok cloud pair             a code for a second device; potok cloud pair <code> uses it there
   potok cloud push             send the newest backup now (otherwise once a day on its own)
   potok cloud get [name|latest] download and decrypt a copy into the backups; then potok restore <file>
   potok cloud take             write from this device: take the mark, take a newer copy (as starting potok does)
@@ -147,6 +148,7 @@ potok — локальный леджер
   potok restore [файл|latest]  поставить бэкап на место леджера; нынешний сначала уходит в бэкап
   potok cloud login [--email <адрес>] [--project <id>]  настроить зашифрованную копию в Google Drive
   potok cloud                  настроено ли, когда ушла последняя копия, какие копии там
+  potok cloud pair             код для второго устройства; potok cloud pair <код> применяет его там
   potok cloud push             отправить свежий бэкап сейчас (иначе раз в сутки само)
   potok cloud get [имя|latest] скачать и расшифровать копию в бэкапы; дальше potok restore <файл>
   potok cloud take             писать с этого устройства: взять метку и свежую копию (как при запуске)
@@ -551,6 +553,20 @@ fn cmd_cloud(args: &Args) -> Result<()> {
     settings::apply_language(&conn)?;
     match args.positional.first().map(String::as_str) {
         Some("login") => cloud::login(&conn, &path, args.email.as_deref(), args.project.as_deref()),
+        Some("pair") => match args.positional.get(1) {
+            // On the new device: the code is the whole argument, and the
+            // passphrase is asked for rather than taken from a command line
+            // that a shell history keeps.
+            Some(code) => cloud::pair(&conn, code),
+            None => {
+                println!("{}", cloud::pair_code(&conn)?);
+                say!(
+                    "Read that line out on the other device: potok cloud pair <code>, then potok cloud take. It opens nothing without the passphrase.",
+                    "Прочитай эту строку на другом устройстве: potok cloud pair <код>, затем potok cloud take. Без пароля она ничего не открывает."
+                );
+                Ok(())
+            }
+        },
         Some("logout") => {
             cloud::logout();
             say!("signed out; the copies stay in Google Drive", "вход забыт; копии остались в Google Drive");
@@ -599,7 +615,7 @@ fn cmd_cloud(args: &Args) -> Result<()> {
             }
             Ok(())
         }
-        Some(other) => anyhow::bail!(tr!("potok cloud {other}? login, take, release, push, get, logout", "potok cloud {other}? login, take, release, push, get, logout")),
+        Some(other) => anyhow::bail!(tr!("potok cloud {other}? login, pair, take, release, push, get, logout", "potok cloud {other}? login, pair, take, release, push, get, logout")),
     }
 }
 
