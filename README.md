@@ -164,10 +164,16 @@ before it is kept: a device that Google refuses says so now rather than
 failing once a day in the background.
 
 `potok cloud login` still works on the second device if you would rather type
-the client in again; it needs **the same passphrase** either way. A device
-signed in through gcloud has no code to hand over — that sign-in belongs to
-that machine, so the other one runs `gcloud auth application-default login`
-and `potok cloud login`.
+the client in again; it needs **the same passphrase** either way.
+
+**A device signed in through gcloud hands over a code too.** It has no client
+of potok's own, so the code carries the client and the refresh token out of
+gcloud's own credentials file, plus the project the calls count against —
+Google refuses those credentials without one, and the new device has no gcloud
+to ask. What the new device keeps is an ordinary potok sign-in: gcloud is never
+installed there and never called. Measured before it was written: the same
+credentials, stored as potok's own and sent with that project, list the real
+folder in Drive.
 
 On Linux the ledger and
 the cloud work the same way; what differs is where the secrets live (above),

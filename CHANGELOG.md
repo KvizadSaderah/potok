@@ -14,6 +14,12 @@ which is not inside it — so a code someone else sees opens nothing, and no
 client has to be registered twice. The sign-in is tried against Drive before
 it is kept, and a failed pairing leaves the device as it was.
 
+A device signed in through gcloud has a code as well: it hands over the
+client and the refresh token gcloud holds, together with the project the calls
+count against, so the new device needs no gcloud of its own. The project now
+travels with an OAuth client of one's own too, because Google refuses
+gcloud's credentials without it.
+
 ## 0.2.0 — 2026-10-20
 
 **Google Drive is out of the way.** Starting no longer waits for Drive (two or
