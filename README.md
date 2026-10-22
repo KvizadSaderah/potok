@@ -142,8 +142,34 @@ Settings.
 
 ## Another machine
 
-Same thing on a second Mac: install, `potok cloud login` with **the same
-passphrase**, and start — the newest copy comes down. On Linux the ledger and
+On the device already set up:
+
+```sh
+potok cloud pair
+```
+
+reads out one line. On the new device:
+
+```sh
+potok cloud pair <that line>
+potok cloud take
+```
+
+and the newest copy comes down. The code carries the OAuth client and the
+sign-in — the two things the second device cannot work out for itself — sealed
+with your passphrase, which it asks for and which is **not** inside the code.
+So a code someone else sees opens nothing, and there is no client to register
+and no browser to open on the new device. The sign-in is proved against Drive
+before it is kept: a device that Google refuses says so now rather than
+failing once a day in the background.
+
+`potok cloud login` still works on the second device if you would rather type
+the client in again; it needs **the same passphrase** either way. A device
+signed in through gcloud has no code to hand over — that sign-in belongs to
+that machine, so the other one runs `gcloud auth application-default login`
+and `potok cloud login`.
+
+On Linux the ledger and
 the cloud work the same way; what differs is where the secrets live (above),
 that the browser is opened with `xdg-open`, and that the device's name comes
 from `hostname` rather than from the Mac's own. A statement is still imported
@@ -179,8 +205,8 @@ Without the interface: `potok cloud take` and `potok cloud release` do what
 starting and leaving do. Only the default ledger takes part — one opened
 with `--db` stays on this Mac.
 
-On a second device: install potok, sign in the same way (`potok cloud login`)
-with the **same passphrase**, and start it — the newest copy comes down.
+On a second device: `potok cloud pair` on this one, `potok cloud pair <code>`
+there, and start it — the newest copy comes down («Another machine» above).
 
 ## Settings
 

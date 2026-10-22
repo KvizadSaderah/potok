@@ -171,6 +171,25 @@ fn base64url(bytes: &[u8]) -> String {
     out
 }
 
+fn from_base64url(text: &str) -> Result<Vec<u8>> {
+    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    // Whitespace is dropped rather than refused: a code travels through a
+    // terminal, a chat and a paste, and comes back wrapped.
+    let mut bits = 0u32;
+    let mut have = 0;
+    let mut out = Vec::new();
+    for c in text.chars().filter(|c| !c.is_whitespace()) {
+        let six = ABC.iter().position(|a| *a as char == c).context(tr!("that is not a potok pairing code", "это не код потока для привязки"))?;
+        bits = bits << 6 | six as u32;
+        have += 6;
+        if have >= 8 {
+            have -= 8;
+            out.push((bits >> have & 0xff) as u8);
+        }
+    }
+    Ok(out)
+}
+
 /// PKCE (RFC 7636): the verifier stays here, its SHA-256 goes to Google.
 fn challenge(verifier: &str) -> String {
     use sha2::Digest;
@@ -315,15 +334,24 @@ fn gcloud_credentials() -> Option<PathBuf> {
     file.exists().then_some(file)
 }
 
-/// A token from gcloud's sign-in, and the project to count it against:
-/// potok's own setting, else the one set on gcloud's sign-in.
+/// The project Drive counts the calls against: potok's own setting, else the
+/// one gcloud's sign-in was given. A device paired from another one has the
+/// setting and no gcloud at all.
+fn quota_project(conn: &rusqlite::Connection) -> Result<Option<String>> {
+    if let Some(mine) = potok_core::settings::get(conn, potok_core::settings::CLOUD_PROJECT)? {
+        return Ok(Some(mine));
+    }
+    let Some(file) = gcloud_credentials() else { return Ok(None) };
+    Ok(std::fs::read(&file).ok().and_then(|b| json(&b).ok()).and_then(|v| v["quota_project_id"].as_str().map(str::to_string)))
+}
+
+/// A token from gcloud's sign-in, and the project to count it against.
 fn gcloud_token(conn: &rusqlite::Connection) -> Result<(String, Option<String>)> {
-    let file = gcloud_credentials().context(tr!(
+    gcloud_credentials().context(tr!(
         "gcloud has no sign-in for applications — gcloud auth application-default login (README)",
         "у gcloud нет входа для приложений — gcloud auth application-default login (README)"
     ))?;
-    let quota = potok_core::settings::get(conn, potok_core::settings::CLOUD_PROJECT)?
-        .or_else(|| std::fs::read(&file).ok().and_then(|b| json(&b).ok()).and_then(|v| v["quota_project_id"].as_str().map(str::to_string)));
+    let quota = quota_project(conn)?;
     let out = Command::new("gcloud")
         .args(["auth", "application-default", "print-access-token"])
         .output()
@@ -387,7 +415,10 @@ impl Drive {
     /// The client of the person's own if there is one, else gcloud's.
     fn connect(conn: &rusqlite::Connection) -> Result<Self> {
         match client() {
-            Ok(client) => Ok(Self { token: access_token(&client)?, quota_project: None }),
+            // The project goes with an own client too: a device paired from a
+            // gcloud sign-in keeps those credentials as its own, and Google
+            // refuses them without the project to count the calls against.
+            Ok(client) => Ok(Self { token: access_token(&client)?, quota_project: quota_project(conn)? }),
             Err(_) => {
                 let (token, quota_project) = gcloud_token(conn)?;
                 Ok(Self { token, quota_project })
@@ -584,6 +615,110 @@ pub fn login(conn: &rusqlite::Connection, db: &Path, email: Option<&str>, projec
     let sent = push(conn, db)?;
     let folder = folder_name();
     println!("{}", tr!("in Google Drive, folder {folder}: {sent}", "в Google Drive, папка {folder}: {sent}"));
+    Ok(())
+}
+
+// ── Pairing a second device ─────────────────────────────────────────────────
+
+/// What a pairing code carries: the OAuth client and the refresh token, the
+/// two things a second device cannot work out for itself.
+///
+/// The passphrase is **not** in it. It is the key the code is sealed with, so
+/// a code seen by somebody else opens nothing, and the second device asks for
+/// the passphrase it would have had to know anyway — the copies in Drive are
+/// encrypted with it.
+fn pack(client: &Client, refresh: &str, project: &str, passphrase: &str) -> Result<String> {
+    // The same seal as a backup, deliberately: one encryption path in this
+    // file, one set of Argon2 parameters, one thing to get right.
+    let plain = format!("{}\n{}\n{}\n{}", client.id, client.secret, refresh, project);
+    Ok(base64url(&seal(plain.as_bytes(), passphrase)?))
+}
+
+fn unpack(code: &str, passphrase: &str) -> Result<(Client, String, String)> {
+    let sealed = from_base64url(code)?;
+    let plain = unseal(&sealed, passphrase).map_err(|_| {
+        anyhow::anyhow!(tr!(
+            "wrong passphrase, or the code is not whole — it is one line, copy all of it",
+            "не тот пароль, или код не целиком — он одной строкой, копируй весь"
+        ))
+    })?;
+    let text = String::from_utf8(plain).map_err(|_| anyhow::anyhow!(tr!("the code is damaged", "код повреждён")))?;
+    let mut lines = text.split('\n');
+    match (lines.next(), lines.next(), lines.next()) {
+        (Some(id), Some(secret), Some(refresh)) if !id.is_empty() && !secret.is_empty() && !refresh.is_empty() => {
+            // The project is the fourth line and may be empty: a code from a
+            // device with an OAuth client of its own needs none.
+            Ok((Client { id: id.into(), secret: secret.into() }, refresh.into(), lines.next().unwrap_or_default().into()))
+        }
+        _ => bail!(tr!("the code is damaged", "код повреждён")),
+    }
+}
+
+/// gcloud's own client and refresh token, out of its credentials file.
+///
+/// A device signed in through gcloud has no client of potok's own, and the
+/// second device should not need gcloud installed to read a backup. These are
+/// the same three fields a client of one's own gives, so what the other device
+/// keeps is a potok sign-in and `gcloud` is never called there.
+fn gcloud_authorized_user() -> Result<(Client, String)> {
+    let file = gcloud_credentials().context(tr!("Google Drive is not set up — potok cloud login", "Google Drive не настроен — potok cloud login"))?;
+    let value = json(&std::fs::read(&file)?)?;
+    let field = |name: &str| value[name].as_str().map(str::to_string).filter(|v| !v.is_empty());
+    match (field("client_id"), field("client_secret"), field("refresh_token")) {
+        (Some(id), Some(secret), Some(refresh)) => Ok((Client { id, secret }, refresh)),
+        // A service account, or a shape gcloud may yet change: better to say
+        // so than to hand over a code that cannot work.
+        _ => bail!(tr!(
+            "gcloud's sign-in here is not one that can be handed over — on the other device: gcloud auth application-default login, then potok cloud login",
+            "вход gcloud здесь не из тех, что можно передать — на другом устройстве: gcloud auth application-default login, потом potok cloud login"
+        )),
+    }
+}
+
+/// The code to read out on the device that is already set up.
+pub fn pair_code(conn: &rusqlite::Connection) -> Result<String> {
+    let passphrase = crate::secrets::get(KEY_PASSPHRASE)?.context(tr!("Google Drive is not set up — potok cloud login", "Google Drive не настроен — potok cloud login"))?;
+    let (client, refresh) = match (client(), crate::secrets::get(KEY_REFRESH)?) {
+        (Ok(client), Some(refresh)) => (client, refresh),
+        // Signed in through gcloud: hand over the credentials gcloud holds.
+        _ => gcloud_authorized_user()?,
+    };
+    // The project the calls count against travels with the code. gcloud's
+    // credentials need one — without it Google refuses the call and names the
+    // missing project — and the other device has no gcloud to ask.
+    let project = quota_project(conn)?.unwrap_or_default();
+    pack(&client, &refresh, &project, &passphrase)
+}
+
+/// Set this device up from a code: the same sign-in, the same passphrase, no
+/// OAuth client to register and no browser.
+///
+/// The sign-in is proved against Drive before it is kept. A device left with
+/// a stored client that Google refuses looks set up and fails once a day in
+/// the background, which is the one outcome worth a network call here.
+pub fn pair(conn: &rusqlite::Connection, code: &str) -> Result<()> {
+    let passphrase = prompt(&tr!("Passphrase (the same as on the other device): ", "Пароль (тот же, что на другом устройстве): "), true)?;
+    let (client, refresh, project) = unpack(code, &passphrase)?;
+    if !project.is_empty() {
+        potok_core::settings::set(conn, potok_core::settings::CLOUD_PROJECT, &project)?;
+    }
+    let before: Vec<(&str, Option<String>)> =
+        [KEY_CLIENT, KEY_REFRESH, KEY_PASSPHRASE].iter().map(|key| (*key, crate::secrets::get(key).ok().flatten())).collect();
+    crate::secrets::put(KEY_CLIENT, &format!("{}\n{}", client.id, client.secret))?;
+    crate::secrets::put(KEY_REFRESH, &refresh)?;
+    crate::secrets::put(KEY_PASSPHRASE, &passphrase)?;
+    if let Err(why) = Drive::connect(conn).and_then(|drive| drive.folder()) {
+        // Put back whatever was here, so a failed pairing leaves the device as
+        // it was rather than half set up.
+        for (key, value) in before {
+            match value {
+                Some(value) => crate::secrets::put(key, &value)?,
+                None => crate::secrets::forget(key),
+            }
+        }
+        return Err(why);
+    }
+    println!("{}", tr!("Paired. The copies in Drive open with this passphrase.", "Привязано. Копии в Drive открываются этим паролем."));
     Ok(())
 }
 
@@ -1082,6 +1217,42 @@ mod tests {
         assert_eq!(challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"), "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
         assert_eq!(base64url(b"f"), "Zg");
         assert_eq!(base64url(b"foob"), "Zm9vYg");
+    }
+
+    /// A pairing code is the sign-in, not the passphrase: it travels, and what
+    /// opens it stays in the person's head.
+    #[test]
+    fn a_pairing_code_carries_the_sign_in_and_needs_the_passphrase() {
+        let client = Client { id: "123.apps.googleusercontent.com".into(), secret: "GOCSPX-secret".into() };
+        let code = pack(&client, "1//refresh-token", "potok-backup-x1", "a long passphrase").unwrap();
+        assert!(!code.contains("a long passphrase"), "the passphrase must not be in the code");
+        assert!(!code.contains("refresh"), "the code is ciphertext");
+
+        let (same, refresh, project) = unpack(&code, "a long passphrase").unwrap();
+        assert_eq!((same.id, same.secret, refresh), (client.id, client.secret, "1//refresh-token".to_string()));
+        // The project travels: gcloud's credentials are refused without it,
+        // and the other device has no gcloud to ask for it.
+        assert_eq!(project, "potok-backup-x1");
+
+        // A code from a device with a client of its own carries no project.
+        let plain = pack(&Client { id: "a".into(), secret: "b".into() }, "c", "", "pass").unwrap();
+        assert_eq!(unpack(&plain, "pass").unwrap().2, "");
+
+        // A code read out and wrapped by a terminal still works; a wrong
+        // passphrase and a truncated code do not.
+        let wrapped = format!("{}\n  {}", &code[..20], &code[20..]);
+        assert!(unpack(&wrapped, "a long passphrase").is_ok());
+        assert!(unpack(&code, "another passphrase").is_err());
+        assert!(unpack(&code[..code.len() - 8], "a long passphrase").is_err());
+        assert!(unpack("not a code at all!", "a long passphrase").is_err());
+    }
+
+    #[test]
+    fn base64url_goes_both_ways_at_every_length() {
+        for n in 0..32 {
+            let bytes: Vec<u8> = (0..n).map(|i| (i * 7 + 13) as u8).collect();
+            assert_eq!(from_base64url(&base64url(&bytes)).unwrap(), bytes, "{n} bytes");
+        }
     }
 
     #[test]

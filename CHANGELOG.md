@@ -4,6 +4,16 @@
 was built with uncommitted changes). `potok update --check` says whether the
 source has moved on since.
 
+## Unreleased
+
+**A second device is one line, not a second OAuth client.** `potok cloud pair`
+on the device already set up reads out a code; `potok cloud pair <code>` on
+the new one takes the same sign-in. The code carries the OAuth client and the
+refresh token sealed with the encryption passphrase, which it asks for and
+which is not inside it — so a code someone else sees opens nothing, and no
+client has to be registered twice. The sign-in is tried against Drive before
+it is kept, and a failed pairing leaves the device as it was.
+
 ## 0.2.0 — 2026-10-20
 
 **Google Drive is out of the way.** Starting no longer waits for Drive (two or
